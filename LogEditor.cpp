@@ -1,9 +1,15 @@
+// PersonLog - single-file C++ Win32 work-log editor.
+// Log storage: LOG/YYYY/MM/DD.DIL  (RTF, GBK/CP936).
+// Build: build.bat (MinGW) or MSVC. Zero external deps beyond Win32 SDK.
 #define UNICODE
 #define _UNICODE
+// MINGW: UNICODE must be defined before any includes, otherwise SendMessage
+// maps to SendMessageA and all LB_ADDSTRING/W-API calls will mangle WCHAR* data.
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
 #include <windows.h>
 #include <commctrl.h>
+#include <commdlg.h>
 #include <richedit.h>
 #include <string>
 #include <vector>
@@ -20,10 +26,11 @@
 #define IDC_RESULTLIST      1005
 #define IDC_BTN_SEARCH      1006
 #define IDC_BTN_CLOSERES    1007
+#define IDC_BTN_FONT        1008
 
 HINSTANCE   g_hInst;
 HWND        g_hDatePicker, g_hRichEdit, g_hBtnSave;
-HWND        g_hSearch, g_hBtnSearch, g_hResultList, g_hBtnCloseRes;
+HWND        g_hSearch, g_hBtnSearch, g_hResultList, g_hBtnCloseRes, g_hBtnFont;
 HMODULE     g_hRichEditLib;
 const WCHAR* g_szRichEditClass;
 WCHAR       g_szLogDir[MAX_PATH];
@@ -45,6 +52,7 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 void    InitControls(HWND hWnd);
 void    ReLayout(HWND hWnd, int cx, int cy);
 void    OnSave(HWND hWnd);
+void    OnFont(HWND hWnd);
 BOOL    LoadLogFile(const SYSTEMTIME* pst);
 BOOL    SaveLogFile(const SYSTEMTIME* pst);
 void    BuildFilePath(const SYSTEMTIME* pst, WCHAR* buf, int n);
@@ -100,6 +108,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int nCmdShow)
     if (p) *p = 0;
     wcscat(g_szLogDir, L"\\LOG");
 
+    // Load RichEdit 4.1 (Vista+) or fall back to RichEdit 2.0 (Win2k+)
     g_hRichEditLib = LoadLibraryW(L"Msftedit.dll");
     g_szRichEditClass = g_hRichEditLib ? L"RICHEDIT50W" : L"RichEdit20W";
     if (!g_hRichEditLib) g_hRichEditLib = LoadLibraryW(L"RichEd20.dll");
@@ -180,6 +189,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             SetMod(TRUE);
         else if (LOWORD(wParam) == IDC_BTN_SEARCH && HIWORD(wParam) == BN_CLICKED)
             DoSearch();
+        else if (LOWORD(wParam) == IDC_BTN_FONT && HIWORD(wParam) == BN_CLICKED)
+            OnFont(hWnd);
         else if (LOWORD(wParam) == IDC_BTN_CLOSERES && HIWORD(wParam) == BN_CLICKED)
             ShowResults(FALSE);
         else if (LOWORD(wParam) == IDC_RESULTLIST && HIWORD(wParam) == LBN_SELCHANGE)
@@ -221,6 +232,8 @@ void InitControls(HWND hWnd)
 {
     int y0 = 6, hBar = 24, gap = 6, x = gap;
 
+    // Layout: [DatePicker] [Save] [Search____] [Query]
+
     // [1] DatePicker
     int dpW = 130;
     g_hDatePicker = CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
@@ -247,19 +260,28 @@ void InitControls(HWND hWnd)
     g_hBtnSearch = CreateWindowExW(0, L"BUTTON", L"\u67E5\u8BE2",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         x, y0, 50, hBar, hWnd, (HMENU)IDC_BTN_SEARCH, g_hInst, NULL);
+    x += 50 + gap;
 
-    // [5] Close results X button (initially hidden)
+    // [5] Font button
+    g_hBtnFont = CreateWindowExW(0, L"BUTTON", L"\u5B57\u4F53",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y0, 45, hBar, hWnd, (HMENU)IDC_BTN_FONT, g_hInst, NULL);
+
+    // [6] Close results X button (initially hidden)
     int listY = y0 + hBar + gap;
     g_hBtnCloseRes = CreateWindowExW(0, L"BUTTON", L"\u00D7",
         WS_CHILD | BS_PUSHBUTTON | BS_FLAT,
         gap, listY, RESULT_W, 20, hWnd, (HMENU)IDC_BTN_CLOSERES, g_hInst, NULL);
 
-    // [6] Result list (initially hidden)
+    // [7] Result list (initially hidden)
+    // LBS_HASSTRINGS is critical: without it the listbox stores lParam
+    // as a raw pointer; since line goes out of scope each loop iteration,
+    // all entries end up as dangling pointers painting garbage.
     g_hResultList = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", NULL,
         WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS,
         gap, listY + 20, RESULT_W, 100, hWnd, (HMENU)IDC_RESULTLIST, g_hInst, NULL);
 
-    // [7] RichEdit
+    // [8] RichEdit
     g_hRichEdit = CreateWindowExW(WS_EX_CLIENTEDGE, g_szRichEditClass, NULL,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
         gap, listY, 100, 100, hWnd, (HMENU)IDC_RICHEDIT, g_hInst, NULL);
@@ -281,11 +303,16 @@ void InitControls(HWND hWnd)
         DEFAULT_QUALITY, FF_DONTCARE, L"\u5B8B\u4F53");
     SendMessage(g_hResultList, WM_SETFONT, (WPARAM)hListFont, TRUE);
 
+    // Subclass search edit and result list to handle Enter/Escape/Arrow keys
     g_oldSearchProc = (WNDPROC)SetWindowLongPtrW(g_hSearch, GWLP_WNDPROC, (LONG_PTR)SearchProc);
     g_oldListProc   = (WNDPROC)SetWindowLongPtrW(g_hResultList, GWLP_WNDPROC, (LONG_PTR)ListProc);
 }
 
 // ================================================================
+// ---------------------------------------------------------------
+//  Layout: when results panel is on, push RichEdit right by RESULT_W.
+//  When off, RichEdit takes full width. Called on WM_SIZE and toggle.
+// ---------------------------------------------------------------
 void ReLayout(HWND hWnd, int cx, int cy)
 {
     int gap = 6, y0 = 6, hBar = 24;
@@ -335,6 +362,60 @@ void OnSave(HWND hWnd)
     (void)hWnd;
 }
 
+void OnFont(HWND hWnd)
+{
+    CHARFORMAT2W cf;
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize = sizeof(cf);
+    // Get current selection formatting as dialog defaults
+    SendMessage(g_hRichEdit, EM_GETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+
+    LOGFONTW lf;
+    memset(&lf, 0, sizeof(lf));
+    lf.lfCharSet        = cf.bCharSet;
+    lf.lfPitchAndFamily = cf.bPitchAndFamily;
+    wcscpy(lf.lfFaceName, cf.szFaceName);
+    HDC hdc = GetDC(hWnd);
+    lf.lfHeight = -MulDiv(cf.yHeight / 20, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+    if (cf.dwMask & CFM_BOLD   && cf.dwEffects & CFE_BOLD)      lf.lfWeight    = FW_BOLD;
+    if (cf.dwMask & CFM_ITALIC && cf.dwEffects & CFE_ITALIC)    lf.lfItalic    = TRUE;
+    if (cf.dwMask & CFM_UNDERLINE && cf.dwEffects & CFE_UNDERLINE) lf.lfUnderline = TRUE;
+    if (cf.dwMask & CFM_STRIKEOUT && cf.dwEffects & CFE_STRIKEOUT) lf.lfStrikeOut = TRUE;
+
+    CHOOSEFONTW cfont;
+    memset(&cfont, 0, sizeof(cfont));
+    cfont.lStructSize = sizeof(cfont);
+    cfont.hwndOwner   = hWnd;
+    cfont.lpLogFont   = &lf;
+    cfont.Flags       = CF_SCREENFONTS | CF_EFFECTS | CF_INITTOLOGFONTSTRUCT;
+    cfont.rgbColors   = cf.crTextColor;
+
+    if (!ChooseFontW(&cfont)) { ReleaseDC(hWnd, hdc); return; }
+    ReleaseDC(hWnd, hdc);
+
+    // Apply chosen formatting to current selection
+    memset(&cf, 0, sizeof(cf));
+    cf.cbSize  = sizeof(cf);
+    cf.dwMask  = CFM_FACE | CFM_SIZE | CFM_COLOR | CFM_CHARSET
+               | CFM_BOLD | CFM_ITALIC | CFM_UNDERLINE | CFM_STRIKEOUT;
+    cf.crTextColor = cfont.rgbColors;
+    cf.bCharSet    = lf.lfCharSet;
+    cf.bPitchAndFamily = lf.lfPitchAndFamily;
+    wcscpy(cf.szFaceName, lf.lfFaceName);
+    if (lf.lfWeight >= FW_BOLD)  cf.dwEffects |= CFE_BOLD;
+    if (lf.lfItalic)             cf.dwEffects |= CFE_ITALIC;
+    if (lf.lfUnderline)          cf.dwEffects |= CFE_UNDERLINE;
+    if (lf.lfStrikeOut)          cf.dwEffects |= CFE_STRIKEOUT;
+
+    hdc = GetDC(hWnd);
+    cf.yHeight = lf.lfHeight ? (-lf.lfHeight * 1440 / GetDeviceCaps(hdc, LOGPIXELSY)) : 200;
+    ReleaseDC(hWnd, hdc);
+
+    SendMessage(g_hRichEdit, EM_SETCHARFORMAT, SCF_SELECTION, (LPARAM)&cf);
+    SetFocus(g_hRichEdit);
+    SetMod(TRUE);
+}
+
 BOOL SaveLogFile(const SYSTEMTIME* pst)
 {
     WCHAR path[MAX_PATH], dir[MAX_PATH];
@@ -342,6 +423,8 @@ BOOL SaveLogFile(const SYSTEMTIME* pst)
     BuildDirPath(pst, dir, MAX_PATH);
     if (!EnsureDir(dir)) { MsgBox(L"\u65E0\u6CD5\u521B\u5EFA\u76EE\u5F55"); return FALSE; }
 
+    // Use EM_STREAMOUT to get RTF from RichEdit into a buffer,
+    // then write the buffer to file as raw bytes.
     StreamCookie ck; std::vector<BYTE> buf;
     ck.data = &buf; ck.pos = 0;
     EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamOutCB };
@@ -400,6 +483,7 @@ void BuildDirPath(const SYSTEMTIME* pst, WCHAR* buf, int n)
         _snwprintf(buf, n, L"%s\\%04d\\%02d", g_szLogDir, pst->wYear, pst->wMonth);
 }
 
+// Recursively create intermediate directories (mkdir -p equivalent)
 BOOL EnsureDir(const WCHAR* path)
 {
     WCHAR tmp[MAX_PATH]; wcscpy(tmp, path);
@@ -434,6 +518,17 @@ BOOL PromptSave(HWND hWnd)
 // ================================================================
 // RTF -> Plain text
 // ================================================================
+// ---------------------------------------------------------------
+//  RTF parser — strips markup from LOG/YYYY/MM/DD.DIL files.
+//  Underlying encoding is GBK (CP936). Output is native WCHAR.
+//  Three non-obvious pitfalls:
+//   1. Control words like \deff0 carry a numeric suffix; must skip
+//      letters AND digits, else "0" leaks into text.
+//   2. \fonttbl { ... } group contains hex escapes and plain ASCII
+//      that are NOT user content. Use brace-depth (depth<=1) guard.
+//   3. \pard is a control word, NOT \par + 'd'. Check boundary after
+//      "par" to avoid matching substrings.
+// ---------------------------------------------------------------
 std::wstring RtfToPlain(const std::vector<BYTE>& rtf)
 {
     if (rtf.size() < 5) return L"";
@@ -451,11 +546,11 @@ std::wstring RtfToPlain(const std::vector<BYTE>& rtf)
         {
             p++;
             if (p >= end) break;
-            if (*p == '\'')
+            if (*p == '\'')    // hex escape: \'xx
             {
                 if (p + 2 < end && isxdigit((unsigned char)p[1]) && isxdigit((unsigned char)p[2]))
                 {
-                    if (depth <= 1)
+                    if (depth <= 1)  // skip fonttbl glyph data
                     {
                         char hex[3] = { p[1], p[2], 0 };
                         gbk += (char)strtol(hex, NULL, 16);
@@ -465,20 +560,20 @@ std::wstring RtfToPlain(const std::vector<BYTE>& rtf)
                 else { p++; }
             }
             else if (*p == 'p' && (p + 2 < end) && p[1] == 'a' && p[2] == 'r'
-                && (p + 3 >= end || !isalpha((unsigned char)p[3])))
+                && (p + 3 >= end || !isalpha((unsigned char)p[3]))) // \par but not \pard
             {
                 if (depth <= 1) gbk += "\r\n";
                 p += 3;
                 if (p < end && *p == ' ') p++;
             }
             else if (*p == 't' && (p + 2 < end) && p[1] == 'a' && p[2] == 'b'
-                && (p + 3 >= end || !isalpha((unsigned char)p[3])))
+                && (p + 3 >= end || !isalpha((unsigned char)p[3]))) // \tab but not \table
             {
                 if (depth <= 1) gbk += '\t';
                 p += 3;
                 if (p < end && *p == ' ') p++;
             }
-            else
+            else   // generic control word: skip letters + numeric param
             {
                 while (p < end && isalpha((unsigned char)*p)) p++;
                 while (p < end && isdigit((unsigned char)*p)) p++;
@@ -488,11 +583,12 @@ std::wstring RtfToPlain(const std::vector<BYTE>& rtf)
         }
         else
         {
-            if (depth <= 1) gbk += *p;
+            if (depth <= 1) gbk += *p;  // plain ASCII, only at top level
             p++;
         }
     }
 
+    // Convert GBK byte-stream -> native WCHAR (CP 936 = GBK)
     if (gbk.empty()) return L"";
     int wlen = MultiByteToWideChar(936, 0, gbk.c_str(), -1, NULL, 0);
     if (wlen <= 0) return L"";
@@ -505,6 +601,11 @@ std::wstring RtfToPlain(const std::vector<BYTE>& rtf)
 // ================================================================
 // Lazy cache build
 // ================================================================
+// ---------------------------------------------------------------
+//  Build search cache by scanning LOG/YYYY/MM/*.DIL recursively.
+//  Called lazily on first search query (not on startup).
+//  Cache is invalidated every time the user saves a file.
+// ---------------------------------------------------------------
 void BuildCache()
 {
     if (g_bCacheLoaded) return;
@@ -541,7 +642,8 @@ void BuildCache()
             HANDLE hD = FindFirstFileW(dayPat, &fdD);
             if (hD == INVALID_HANDLE_VALUE) continue;
 
-            do {
+    // Walk year/month/day directory tree: LOG -> YYYY -> MM -> DD.DIL
+    do {
                 if (fdD.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
                 WCHAR nm[3] = { fdD.cFileName[0], fdD.cFileName[1], 0 };
                 int day = _wtoi(nm);

@@ -13,7 +13,7 @@ if %errorlevel% equ 0 (
     if %errorlevel% neq 0 (echo [MinGW] windres FAILED & goto :end)
 
     echo [MinGW] Building %OUT% ...
-    g++ -O2 -std=c++11 -Wall -mwindows -static "%SRC%" "%RES_OUT%" -o "%OUT%" -lcomctl32 -lshell32
+    g++ -O2 -std=c++11 -Wall -mwindows -static "%SRC%" "%RES_OUT%" -o "%OUT%" -lcomctl32 -lcomdlg32 -lshell32
     if %errorlevel% equ 0 (echo [MinGW] OK: %OUT%) else (echo [MinGW] FAILED)
     goto :end
 )
@@ -24,7 +24,7 @@ if %errorlevel% equ 0 (
     echo [MSVC] Compiling resources...
     rc /fo icon.res icon.rc
     echo [MSVC] Building %OUT% ...
-    cl /EHsc /O2 /Fe:%OUT% %SRC% icon.res comctl32.lib shell32.lib /link /SUBSYSTEM:WINDOWS
+    cl /EHsc /O2 /Fe:%OUT% %SRC% icon.res comctl32.lib comdlg32.lib shell32.lib /link /SUBSYSTEM:WINDOWS
     if %errorlevel% equ 0 (echo [MSVC] OK: %OUT%) else (echo [MSVC] FAILED)
     goto :end
 )
