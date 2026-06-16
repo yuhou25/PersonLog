@@ -782,6 +782,7 @@ LRESULT CALLBACK ListProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 //  Export dialog — date range picker
 // ================================================================
 static SYSTEMTIME g_exFrom, g_exTo;
+static BOOL      g_dlgDone;
 
 LRESULT CALLBACK ExportWndProc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
 {
@@ -793,23 +794,27 @@ LRESULT CALLBACK ExportWndProc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
             WS_CHILD | WS_VISIBLE, 10, 14, 30, 22, hDlg, NULL, g_hInst, NULL);
         CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
             WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
-            42, 10, 130, 22, hDlg, (HMENU)IDC_EX_FROM, g_hInst, NULL);
+            42, 10, 150, 22, hDlg, (HMENU)IDC_EX_FROM, g_hInst, NULL);
         CreateWindowExW(0, L"STATIC", L"\u5230:",
             WS_CHILD | WS_VISIBLE, 10, 44, 30, 22, hDlg, NULL, g_hInst, NULL);
         CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
             WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
-            42, 40, 130, 22, hDlg, (HMENU)IDC_EX_TO, g_hInst, NULL);
+            42, 40, 150, 22, hDlg, (HMENU)IDC_EX_TO, g_hInst, NULL);
         CreateWindowExW(0, L"BUTTON", L"\u786E\u5B9A",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            30, 75, 60, 24, hDlg, (HMENU)IDOK, g_hInst, NULL);
+            40, 75, 60, 24, hDlg, (HMENU)IDOK, g_hInst, NULL);
         CreateWindowExW(0, L"BUTTON", L"\u53D6\u6D88",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            105, 75, 60, 24, hDlg, (HMENU)IDCANCEL, g_hInst, NULL);
+            120, 75, 60, 24, hDlg, (HMENU)IDCANCEL, g_hInst, NULL);
 
         SendMessage(GetDlgItem(hDlg, IDC_EX_FROM), DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&g_exFrom);
         SendMessage(GetDlgItem(hDlg, IDC_EX_TO),   DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&g_exTo);
         return 0;
     }
+    case WM_CLOSE:
+        g_dlgDone = TRUE;
+        DestroyWindow(hDlg);
+        return 0;
     case WM_COMMAND:
         if (LOWORD(wp) == IDOK)
         {
@@ -828,26 +833,24 @@ LRESULT CALLBACK ExportWndProc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
                 break;
             }
             g_exFrom = stFrom; g_exTo = stTo;
+            g_dlgDone = TRUE;
             DestroyWindow(hDlg);
             return 0;
         }
         if (LOWORD(wp) == IDCANCEL)
         {
             g_exFrom.wYear = 0;  // signal cancelled
+            g_dlgDone = TRUE;
             DestroyWindow(hDlg);
             return 0;
         }
         break;
-    case WM_DESTROY:
-        PostQuitMessage(0);
-        return 0;
     }
     return DefWindowProcW(hDlg, msg, wp, lp);
 }
 
 static BOOL ShowExportDialog(HWND hParent)
 {
-    // Register once
     static BOOL registered = FALSE;
     if (!registered)
     {
@@ -862,9 +865,9 @@ static BOOL ShowExportDialog(HWND hParent)
         registered = TRUE;
     }
 
+    // Both default to today
     GetLocalTime(&g_exFrom);
     g_exTo = g_exFrom;
-    g_exFrom.wYear = 2000;
 
     RECT rp; GetWindowRect(hParent, &rp);
     int dx = 230, dy = 140;
@@ -877,13 +880,17 @@ static BOOL ShowExportDialog(HWND hParent)
     EnableWindow(hParent, FALSE);
     ShowWindow(hDlg, SW_SHOW);
 
-    MSG m;
-    while (IsWindow(hDlg))
+    g_dlgDone = FALSE;
+    while (!g_dlgDone)
     {
-        GetMessage(&m, NULL, 0, 0);
-        if (!IsWindow(hDlg)) break;
-        TranslateMessage(&m);
-        DispatchMessage(&m);
+        MSG m;
+        while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE))
+        {
+            if (m.message == WM_QUIT) { g_dlgDone = TRUE; break; }
+            TranslateMessage(&m);
+            DispatchMessageW(&m);
+        }
+        WaitMessage();
     }
 
     EnableWindow(hParent, TRUE);
