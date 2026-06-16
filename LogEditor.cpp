@@ -27,10 +27,14 @@
 #define IDC_BTN_SEARCH      1006
 #define IDC_BTN_CLOSERES    1007
 #define IDC_BTN_FONT        1008
+#define IDC_BTN_EXPORT      1009
+
+#define IDC_EX_FROM         2001
+#define IDC_EX_TO           2002
 
 HINSTANCE   g_hInst;
 HWND        g_hDatePicker, g_hRichEdit, g_hBtnSave;
-HWND        g_hSearch, g_hBtnSearch, g_hResultList, g_hBtnCloseRes, g_hBtnFont;
+HWND        g_hSearch, g_hBtnSearch, g_hResultList, g_hBtnCloseRes, g_hBtnFont, g_hBtnExport;
 HMODULE     g_hRichEditLib;
 const WCHAR* g_szRichEditClass;
 WCHAR       g_szLogDir[MAX_PATH];
@@ -53,6 +57,8 @@ void    InitControls(HWND hWnd);
 void    ReLayout(HWND hWnd, int cx, int cy);
 void    OnSave(HWND hWnd);
 void    OnFont(HWND hWnd);
+void    OnExport(HWND hWnd);
+INT_PTR CALLBACK ExportDlgProc(HWND, UINT, WPARAM, LPARAM);
 BOOL    LoadLogFile(const SYSTEMTIME* pst);
 BOOL    SaveLogFile(const SYSTEMTIME* pst);
 void    BuildFilePath(const SYSTEMTIME* pst, WCHAR* buf, int n);
@@ -191,6 +197,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             DoSearch();
         else if (LOWORD(wParam) == IDC_BTN_FONT && HIWORD(wParam) == BN_CLICKED)
             OnFont(hWnd);
+        else if (LOWORD(wParam) == IDC_BTN_EXPORT && HIWORD(wParam) == BN_CLICKED)
+            OnExport(hWnd);
         else if (LOWORD(wParam) == IDC_BTN_CLOSERES && HIWORD(wParam) == BN_CLICKED)
             ShowResults(FALSE);
         else if (LOWORD(wParam) == IDC_RESULTLIST && HIWORD(wParam) == LBN_SELCHANGE)
@@ -266,14 +274,20 @@ void InitControls(HWND hWnd)
     g_hBtnFont = CreateWindowExW(0, L"BUTTON", L"\u5B57\u4F53",
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         x, y0, 45, hBar, hWnd, (HMENU)IDC_BTN_FONT, g_hInst, NULL);
+    x += 45 + gap;
 
-    // [6] Close results X button (initially hidden)
+    // [6] Export button
+    g_hBtnExport = CreateWindowExW(0, L"BUTTON", L"\u5BFC\u51FA",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y0, 45, hBar, hWnd, (HMENU)IDC_BTN_EXPORT, g_hInst, NULL);
+
+    // [7] Close results X button (initially hidden)
     int listY = y0 + hBar + gap;
     g_hBtnCloseRes = CreateWindowExW(0, L"BUTTON", L"\u00D7",
         WS_CHILD | BS_PUSHBUTTON | BS_FLAT,
         gap, listY, RESULT_W, 20, hWnd, (HMENU)IDC_BTN_CLOSERES, g_hInst, NULL);
 
-    // [7] Result list (initially hidden)
+    // [8] Result list (initially hidden)
     // LBS_HASSTRINGS is critical: without it the listbox stores lParam
     // as a raw pointer; since line goes out of scope each loop iteration,
     // all entries end up as dangling pointers painting garbage.
@@ -281,7 +295,7 @@ void InitControls(HWND hWnd)
         WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | LBS_HASSTRINGS,
         gap, listY + 20, RESULT_W, 100, hWnd, (HMENU)IDC_RESULTLIST, g_hInst, NULL);
 
-    // [8] RichEdit
+    // [9] RichEdit
     g_hRichEdit = CreateWindowExW(WS_EX_CLIENTEDGE, g_szRichEditClass, NULL,
         WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN,
         gap, listY, 100, 100, hWnd, (HMENU)IDC_RICHEDIT, g_hInst, NULL);
@@ -762,4 +776,224 @@ LRESULT CALLBACK ListProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         break;
     }
     return CallWindowProcW(g_oldListProc, hWnd, msg, wParam, lParam);
+}
+
+// ================================================================
+//  Export dialog — date range picker
+// ================================================================
+static SYSTEMTIME g_exFrom, g_exTo;
+
+LRESULT CALLBACK ExportWndProc(HWND hDlg, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg)
+    {
+    case WM_CREATE:
+    {
+        CreateWindowExW(0, L"STATIC", L"\u4ECE:",
+            WS_CHILD | WS_VISIBLE, 10, 14, 30, 22, hDlg, NULL, g_hInst, NULL);
+        CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
+            WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
+            42, 10, 130, 22, hDlg, (HMENU)IDC_EX_FROM, g_hInst, NULL);
+        CreateWindowExW(0, L"STATIC", L"\u5230:",
+            WS_CHILD | WS_VISIBLE, 10, 44, 30, 22, hDlg, NULL, g_hInst, NULL);
+        CreateWindowExW(0, DATETIMEPICK_CLASSW, NULL,
+            WS_CHILD | WS_VISIBLE | DTS_SHORTDATECENTURYFORMAT,
+            42, 40, 130, 22, hDlg, (HMENU)IDC_EX_TO, g_hInst, NULL);
+        CreateWindowExW(0, L"BUTTON", L"\u786E\u5B9A",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            30, 75, 60, 24, hDlg, (HMENU)IDOK, g_hInst, NULL);
+        CreateWindowExW(0, L"BUTTON", L"\u53D6\u6D88",
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            105, 75, 60, 24, hDlg, (HMENU)IDCANCEL, g_hInst, NULL);
+
+        SendMessage(GetDlgItem(hDlg, IDC_EX_FROM), DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&g_exFrom);
+        SendMessage(GetDlgItem(hDlg, IDC_EX_TO),   DTM_SETSYSTEMTIME, GDT_VALID, (LPARAM)&g_exTo);
+        return 0;
+    }
+    case WM_COMMAND:
+        if (LOWORD(wp) == IDOK)
+        {
+            SYSTEMTIME stFrom, stTo;
+            DWORD r1 = (DWORD)SendMessage(GetDlgItem(hDlg, IDC_EX_FROM), DTM_GETSYSTEMTIME, 0, (LPARAM)&stFrom);
+            DWORD r2 = (DWORD)SendMessage(GetDlgItem(hDlg, IDC_EX_TO),   DTM_GETSYSTEMTIME, 0, (LPARAM)&stTo);
+            if (r1 != GDT_VALID || r2 != GDT_VALID) break;
+
+            FILETIME ft1, ft2;
+            SystemTimeToFileTime(&stFrom, &ft1);
+            SystemTimeToFileTime(&stTo,   &ft2);
+            if (CompareFileTime(&ft1, &ft2) > 0)
+            {
+                MessageBoxW(hDlg, L"\u5F00\u59CB\u65E5\u671F\u4E0D\u80FD\u665A\u4E8E\u7ED3\u675F\u65E5\u671F\u3002",
+                    L"\u63D0\u793A", MB_OK | MB_ICONWARNING);
+                break;
+            }
+            g_exFrom = stFrom; g_exTo = stTo;
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        if (LOWORD(wp) == IDCANCEL)
+        {
+            g_exFrom.wYear = 0;  // signal cancelled
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        break;
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hDlg, msg, wp, lp);
+}
+
+static BOOL ShowExportDialog(HWND hParent)
+{
+    // Register once
+    static BOOL registered = FALSE;
+    if (!registered)
+    {
+        WNDCLASSEXW wc = {0};
+        wc.cbSize = sizeof(wc);
+        wc.lpfnWndProc = ExportWndProc;
+        wc.hInstance   = g_hInst;
+        wc.hCursor     = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = L"ExportDlg";
+        RegisterClassExW(&wc);
+        registered = TRUE;
+    }
+
+    GetLocalTime(&g_exFrom);
+    g_exTo = g_exFrom;
+    g_exFrom.wYear = 2000;
+
+    RECT rp; GetWindowRect(hParent, &rp);
+    int dx = 200, dy = 115;
+    HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ExportDlg",
+        L"\u5BFC\u51FA\u65E5\u5FD7", WS_POPUP | WS_CAPTION | WS_SYSMENU,
+        rp.left + ((rp.right - rp.left) - dx) / 2,
+        rp.top  + ((rp.bottom - rp.top) - dy) / 2,
+        dx, dy, hParent, NULL, g_hInst, NULL);
+
+    EnableWindow(hParent, FALSE);
+    ShowWindow(hDlg, SW_SHOW);
+
+    MSG m;
+    while (IsWindow(hDlg))
+    {
+        GetMessage(&m, NULL, 0, 0);
+        if (!IsWindow(hDlg)) break;
+        TranslateMessage(&m);
+        DispatchMessage(&m);
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
+
+    return g_exFrom.wYear != 0;
+}
+
+// ================================================================
+static int DaysBetween(const SYSTEMTIME* a, const SYSTEMTIME* b)
+{
+    FILETIME fa, fb;
+    SystemTimeToFileTime(a, &fa);
+    SystemTimeToFileTime(b, &fb);
+    ULARGE_INTEGER ua, ub;
+    ua.LowPart = fa.dwLowDateTime; ua.HighPart = fa.dwHighDateTime;
+    ub.LowPart = fb.dwLowDateTime; ub.HighPart = fb.dwHighDateTime;
+    return (int)((ub.QuadPart - ua.QuadPart) / 10000000LL / 86400LL);
+}
+
+void OnExport(HWND hWnd)
+{
+    if (!ShowExportDialog(hWnd)) return; // User cancelled
+
+    // Open save file dialog
+    WCHAR savePath[MAX_PATH] = L"export.rtf";
+    OPENFILENAMEW ofn;
+    memset(&ofn, 0, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner   = hWnd;
+    ofn.lpstrFilter = L"RTF Files (*.rtf)\0*.rtf\0All Files (*.*)\0*.*\0";
+    ofn.lpstrFile   = savePath;
+    ofn.nMaxFile    = MAX_PATH;
+    ofn.Flags       = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
+    ofn.lpstrDefExt = L"rtf";
+    if (!GetSaveFileNameW(&ofn)) return;
+
+    // Create hidden RichEdit for merging
+    HWND hMerge = CreateWindowExW(0, g_szRichEditClass, NULL,
+        WS_CHILD, 0, 0, 10, 10, hWnd, NULL, g_hInst, NULL);
+    SendMessage(hMerge, EM_SETEVENTMASK, 0, 0);
+
+    BOOL first = TRUE;
+    SYSTEMTIME cur = g_exFrom;
+    int days = DaysBetween(&g_exFrom, &g_exTo);
+
+    for (int d = 0; d <= days; d++)
+    {
+        WCHAR path[MAX_PATH];
+        BuildFilePath(&cur, path, MAX_PATH);
+
+        std::vector<BYTE> rtf = ReadFileToBuf(path);
+        if (rtf.empty()) { cur.wDay++;  if (cur.wDay > 31) break;  continue; }
+
+        if (first)
+        {
+            // First file: stream in as base
+            StreamCookie ck; ck.data = &rtf; ck.pos = 0;
+            EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
+            first = FALSE;
+        }
+        else
+        {
+            // Append separator + date header + next day's RTF
+            CHARRANGE cr; SendMessage(hMerge, EM_EXGETSEL, 0, (LPARAM)&cr);
+            cr.cpMin = cr.cpMax = -1; // end of document
+            SendMessage(hMerge, EM_EXSETSEL, 0, (LPARAM)&cr);
+
+            WCHAR sep[128];
+            _snwprintf(sep, 128, L"\\par \\par \\fs24\\b %04d/%02d/%02d\\b0\\fs18\\par ",
+                cur.wYear, cur.wMonth, cur.wDay);
+
+            SETTEXTEX st;
+            st.flags = ST_SELECTION; st.codepage = 1200;
+            SendMessage(hMerge, EM_SETTEXTEX, (WPARAM)&st, (LPARAM)sep);
+
+            StreamCookie ck; ck.data = &rtf; ck.pos = 0;
+            EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
+        }
+
+        // Advance to next day
+        FILETIME ft;
+        SystemTimeToFileTime(&cur, &ft);
+        ULARGE_INTEGER ul;
+        ul.LowPart = ft.dwLowDateTime; ul.HighPart = ft.dwHighDateTime;
+        ul.QuadPart += 864000000000LL;
+        ft.dwLowDateTime  = ul.LowPart;
+        ft.dwHighDateTime = ul.HighPart;
+        FileTimeToSystemTime(&ft, &cur);
+    }
+
+    if (first)
+    {
+        DestroyWindow(hMerge);
+        MessageBoxW(hWnd, L"\u8BE5\u65E5\u671F\u8303\u56F4\u5185\u6CA1\u6709\u65E5\u5FD7\u8BB0\u5F55\u3002",
+            L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+
+    // Stream out merged RTF
+    StreamCookie ck;
+    std::vector<BYTE> outBuf;
+    ck.data = &outBuf; ck.pos = 0;
+    EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamOutCB };
+    SendMessage(hMerge, EM_STREAMOUT, SF_RTF, (LPARAM)&es);
+
+    DestroyWindow(hMerge);
+
+    if (!WriteBufToFile(savePath, outBuf))
+        MsgBox(L"\u65E0\u6CD5\u5199\u5165\u5BFC\u51FA\u6587\u4EF6\u3002");
 }
