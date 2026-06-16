@@ -867,7 +867,7 @@ static BOOL ShowExportDialog(HWND hParent)
     g_exFrom.wYear = 2000;
 
     RECT rp; GetWindowRect(hParent, &rp);
-    int dx = 200, dy = 115;
+    int dx = 230, dy = 140;
     HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME, L"ExportDlg",
         L"\u5BFC\u51FA\u65E5\u5FD7", WS_POPUP | WS_CAPTION | WS_SYSMENU,
         rp.left + ((rp.right - rp.left) - dx) / 2,
@@ -906,9 +906,8 @@ static int DaysBetween(const SYSTEMTIME* a, const SYSTEMTIME* b)
 
 void OnExport(HWND hWnd)
 {
-    if (!ShowExportDialog(hWnd)) return; // User cancelled
+    if (!ShowExportDialog(hWnd)) return;
 
-    // Open save file dialog
     WCHAR savePath[MAX_PATH] = L"export.rtf";
     OPENFILENAMEW ofn;
     memset(&ofn, 0, sizeof(ofn));
@@ -921,60 +920,61 @@ void OnExport(HWND hWnd)
     ofn.lpstrDefExt = L"rtf";
     if (!GetSaveFileNameW(&ofn)) return;
 
-    // Create hidden RichEdit for merging
+    // Hidden RichEdit for merging
     HWND hMerge = CreateWindowExW(0, g_szRichEditClass, NULL,
         WS_CHILD, 0, 0, 10, 10, hWnd, NULL, g_hInst, NULL);
-    SendMessage(hMerge, EM_SETEVENTMASK, 0, 0);
 
     BOOL first = TRUE;
     SYSTEMTIME cur = g_exFrom;
-    int days = DaysBetween(&g_exFrom, &g_exTo);
+    int totalDays = DaysBetween(&g_exFrom, &g_exTo);
 
-    for (int d = 0; d <= days; d++)
+    for (int d = 0; d <= totalDays; d++)
     {
         WCHAR path[MAX_PATH];
         BuildFilePath(&cur, path, MAX_PATH);
 
         std::vector<BYTE> rtf = ReadFileToBuf(path);
-        if (rtf.empty()) { cur.wDay++;  if (cur.wDay > 31) break;  continue; }
+
+        // Advance to next day regardless of whether file exists
+        SYSTEMTIME next = cur;
+        FILETIME ft;
+        SystemTimeToFileTime(&next, &ft);
+        ULARGE_INTEGER ul;
+        ul.LowPart = ft.dwLowDateTime; ul.HighPart = ft.dwHighDateTime;
+        ul.QuadPart += 864000000000LL;
+        ft.dwLowDateTime = ul.LowPart; ft.dwHighDateTime = ul.HighPart;
+        FileTimeToSystemTime(&ft, &next);
+
+        if (rtf.empty()) { cur = next; continue; }
 
         if (first)
         {
-            // First file: stream in as base
             StreamCookie ck; ck.data = &rtf; ck.pos = 0;
             EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
-            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF, (LPARAM)&es);
             first = FALSE;
         }
         else
         {
-            // Append separator + date header + next day's RTF
-            CHARRANGE cr; SendMessage(hMerge, EM_EXGETSEL, 0, (LPARAM)&cr);
-            cr.cpMin = cr.cpMax = -1; // end of document
-            SendMessage(hMerge, EM_EXSETSEL, 0, (LPARAM)&cr);
-
-            WCHAR sep[128];
-            _snwprintf(sep, 128, L"\\par \\par \\fs24\\b %04d/%02d/%02d\\b0\\fs18\\par ",
+            // Build separator RTF: bold date header
+            char buf[256];
+            _snprintf(buf, sizeof(buf),
+                "{\\rtf1\\ansi\\pard\\fs24\\b %04d/%02d/%02d\\b0\\fs18\\par}",
                 cur.wYear, cur.wMonth, cur.wDay);
+            std::vector<BYTE> sepRtf((BYTE*)buf, (BYTE*)buf + strlen(buf));
 
-            SETTEXTEX st;
-            st.flags = ST_SELECTION; st.codepage = 1200;
-            SendMessage(hMerge, EM_SETTEXTEX, (WPARAM)&st, (LPARAM)sep);
+            // Position at end, insert separator then day's RTF
+            SendMessage(hMerge, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
+            StreamCookie ckSep; ckSep.data = &sepRtf; ckSep.pos = 0;
+            EDITSTREAM esSep = { (DWORD_PTR)&ckSep, 0, StreamInCB };
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&esSep);
 
             StreamCookie ck; ck.data = &rtf; ck.pos = 0;
             EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
             SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
         }
 
-        // Advance to next day
-        FILETIME ft;
-        SystemTimeToFileTime(&cur, &ft);
-        ULARGE_INTEGER ul;
-        ul.LowPart = ft.dwLowDateTime; ul.HighPart = ft.dwHighDateTime;
-        ul.QuadPart += 864000000000LL;
-        ft.dwLowDateTime  = ul.LowPart;
-        ft.dwHighDateTime = ul.HighPart;
-        FileTimeToSystemTime(&ft, &cur);
+        cur = next;
     }
 
     if (first)
@@ -985,7 +985,6 @@ void OnExport(HWND hWnd)
         return;
     }
 
-    // Stream out merged RTF
     StreamCookie ck;
     std::vector<BYTE> outBuf;
     ck.data = &outBuf; ck.pos = 0;
