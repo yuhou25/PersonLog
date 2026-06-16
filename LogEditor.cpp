@@ -931,7 +931,7 @@ void OnExport(HWND hWnd)
     HWND hMerge = CreateWindowExW(0, g_szRichEditClass, NULL,
         WS_CHILD, 0, 0, 10, 10, hWnd, NULL, g_hInst, NULL);
 
-    BOOL first = TRUE;
+    BOOL hasContent = FALSE;
     SYSTEMTIME cur = g_exFrom;
     int totalDays = DaysBetween(&g_exFrom, &g_exTo);
 
@@ -942,7 +942,7 @@ void OnExport(HWND hWnd)
 
         std::vector<BYTE> rtf = ReadFileToBuf(path);
 
-        // Advance to next day regardless of whether file exists
+        // Advance day before continue check so the loop always progresses
         SYSTEMTIME next = cur;
         FILETIME ft;
         SystemTimeToFileTime(&next, &ft);
@@ -954,28 +954,35 @@ void OnExport(HWND hWnd)
 
         if (rtf.empty()) { cur = next; continue; }
 
-        if (first)
+        // Date header RTF with two \par for spacing
+        char hdr[256];
+        _snprintf(hdr, sizeof(hdr),
+            "{\\rtf1\\ansi\\pard\\fs24\\b %04d/%02d/%02d\\b0\\fs18\\par \\par}",
+            cur.wYear, cur.wMonth, cur.wDay);
+        std::vector<BYTE> hdrRtf((BYTE*)hdr, (BYTE*)hdr + strlen(hdr));
+
+        if (!hasContent)
         {
+            // First entry: date header as base, content appended
+            StreamCookie ckHdr; ckHdr.data = &hdrRtf; ckHdr.pos = 0;
+            EDITSTREAM esHdr = { (DWORD_PTR)&ckHdr, 0, StreamInCB };
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF, (LPARAM)&esHdr);
+
+            SendMessage(hMerge, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
             StreamCookie ck; ck.data = &rtf; ck.pos = 0;
             EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
-            SendMessage(hMerge, EM_STREAMIN, SF_RTF, (LPARAM)&es);
-            first = FALSE;
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
+            hasContent = TRUE;
         }
         else
         {
-            // Build separator RTF: bold date header
-            char buf[256];
-            _snprintf(buf, sizeof(buf),
-                "{\\rtf1\\ansi\\pard\\fs24\\b %04d/%02d/%02d\\b0\\fs18\\par}",
-                cur.wYear, cur.wMonth, cur.wDay);
-            std::vector<BYTE> sepRtf((BYTE*)buf, (BYTE*)buf + strlen(buf));
-
-            // Position at end, insert separator then day's RTF
+            // Subsequent: go to end, insert header, insert content
             SendMessage(hMerge, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
-            StreamCookie ckSep; ckSep.data = &sepRtf; ckSep.pos = 0;
-            EDITSTREAM esSep = { (DWORD_PTR)&ckSep, 0, StreamInCB };
-            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&esSep);
+            StreamCookie ckHdr; ckHdr.data = &hdrRtf; ckHdr.pos = 0;
+            EDITSTREAM esHdr = { (DWORD_PTR)&ckHdr, 0, StreamInCB };
+            SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&esHdr);
 
+            SendMessage(hMerge, EM_SETSEL, (WPARAM)-1, (LPARAM)-1);
             StreamCookie ck; ck.data = &rtf; ck.pos = 0;
             EDITSTREAM es = { (DWORD_PTR)&ck, 0, StreamInCB };
             SendMessage(hMerge, EM_STREAMIN, SF_RTF | SFF_SELECTION, (LPARAM)&es);
@@ -984,7 +991,7 @@ void OnExport(HWND hWnd)
         cur = next;
     }
 
-    if (first)
+    if (!hasContent)
     {
         DestroyWindow(hMerge);
         MessageBoxW(hWnd, L"\u8BE5\u65E5\u671F\u8303\u56F4\u5185\u6CA1\u6709\u65E5\u5FD7\u8BB0\u5F55\u3002",
@@ -1002,4 +1009,7 @@ void OnExport(HWND hWnd)
 
     if (!WriteBufToFile(savePath, outBuf))
         MsgBox(L"\u65E0\u6CD5\u5199\u5165\u5BFC\u51FA\u6587\u4EF6\u3002");
+    else
+        MessageBoxW(hWnd, L"\u5BFC\u51FA\u6210\u529F\u3002",
+            L"\u63D0\u793A", MB_OK | MB_ICONINFORMATION);
 }
